@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>EWS Trip Tracker</title>
+<style>
+:root{--bg:#f3f5f4;--card:#fff;--fg:#14211b;--mute:#5d6b64;--line:#d6ddd9;--go:#1f7a4d;--site:#b7791f;--end:#b3261e;--acc:#714B67}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1512;--card:#18211c;--fg:#e8efeb;--mute:#97a69e;--line:#2b3832;--go:#3fb37a;--site:#e0a640;--end:#ef6b62;--acc:#c79bbc;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:520px;margin:0 auto;padding:16px max(16px,env(safe-area-inset-right)) 40px max(16px,env(safe-area-inset-left));display:grid;gap:14px}
+h1{font-size:20px;margin:6px 0 0}
+.sub{color:var(--mute);font-size:13.5px;margin:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;display:grid;gap:10px}
+label{font-size:13px;color:var(--mute);font-weight:600}
+input,textarea{width:100%;font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--fg)}
+button{font:inherit;font-weight:700;border:0;border-radius:11px;padding:16px;font-size:18px;color:#fff;cursor:pointer;width:100%}
+button:disabled{opacity:.4}
+.b-go{background:var(--go)}.b-site{background:var(--site)}.b-end{background:var(--end)}.b-wa{background:#1fa855}.b-sec{background:transparent;color:var(--mute);border:1px solid var(--line);font-size:14px;padding:10px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+.stats div{background:var(--bg);border-radius:9px;padding:8px 4px}
+.stats b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.stats span{font-size:11.5px;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
+.status{font-size:14px;padding:9px 12px;border-radius:9px;background:var(--bg)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--mute);margin-right:6px}
+.live .dot{background:var(--go);animation:p 1.4s infinite}
+@keyframes p{50%{opacity:.25}}
+pre{white-space:pre-wrap;font:13.5px/1.5 ui-monospace,Menlo,monospace;background:var(--bg);padding:10px;border-radius:9px;margin:0}
+.warn{font-size:13px;color:var(--site)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>EWS Trip Tracker</h1>
+    <p class="sub">Engineering Works and Solution – delivery distance recording</p>
+  </div>
+
+  <div class="card" id="setup">
+    <label for="driver">Driver name</label>
+    <input id="driver" placeholder="e.g. Aslam">
+    <label for="vehicle">Vehicle</label>
+    <input id="vehicle" value="Tractor Trolley">
+    <label for="note">Going to (site / customer) – optional</label>
+    <input id="note" placeholder="e.g. Irfan & Co. – Vehari Chowk">
+    <button class="b-go" id="bStart">▶ Start Trip (leaving factory)</button>
+    <p class="warn">Allow location when the phone asks. Keep this page open on screen during the trip (phone on charger).</p>
+  </div>
+
+  <div class="card" id="live" hidden>
+    <div class="status" id="status"><span class="dot"></span><span id="stxt">Waiting for GPS…</span></div>
+    <div class="stats">
+      <div><b id="kGo">0.0</b><span>Going km</span></div>
+      <div><b id="kBack">0.0</b><span>Return km</span></div>
+      <div><b id="tm">0:00</b><span>Time</span></div>
+    </div>
+    <button class="b-site" id="bSite">📍 Reached Site (unloading)</button>
+    <button class="b-end" id="bEnd" disabled>■ End Trip (back at factory)</button>
+  </div>
+
+  <div class="card" id="done" hidden>
+    <pre id="report"></pre>
+    <button class="b-wa" id="bWa">Send to WhatsApp</button>
+    <button class="b-sec" id="bCopy">Copy report</button>
+    <button class="b-sec" id="bNew">Start a new trip</button>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+let S=null,watch=null,wake=null,timer=null;
+const save=()=>{try{localStorage.setItem('ewsTrip',JSON.stringify(S))}catch(e){}};
+const R=6371e3,rad=x=>x*Math.PI/180;
+function dist(a,b){const dl=rad(b.la-a.la),dn=rad(b.lo-a.lo);const h=Math.sin(dl/2)**2+Math.cos(rad(a.la))*Math.cos(rad(b.la))*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
+const fmtT=ms=>{const m=Math.floor(ms/60000);return Math.floor(m/60)+':'+String(m%60).padStart(2,'0')};
+const hhmm=t=>new Date(t).toLocaleTimeString('en-PK',{hour:'2-digit',minute:'2-digit'});
+async function lock(){try{wake=await navigator.wakeLock.request('screen')}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&S&&!S.end)lock()});
+
+function onPos(p){
+  const c=p.coords,pt={la:c.latitude,lo:c.longitude,t:p.timestamp,a:c.accuracy};
+  $('stxt').textContent='GPS on · accuracy '+Math.round(c.accuracy)+' m';
+  $('status').className='status live';
+  if(c.accuracy>40)return;
+  const leg=S.siteAt?'back':'go';
+  const last=S.last;
+  if(last){
+    const d=dist(last,pt),dt=(pt.t-last.t)/1000;
+    if(d<8)return;                       // GPS jitter
+    if(dt>0&&d/dt>45)return;             // impossible jump (>160 km/h)
+    S[leg]+=d;
+  }
+  S.last=pt;S.pts.push([+pt.la.toFixed(5),+pt.lo.toFixed(5),pt.t,leg]);
+  // stop detection
+  const st=S.stop;
+  if(st&&dist(st,pt)<120){st.to=pt.t}else{
+    if(st&&st.to-st.from>=3*60000)S.stops.push({la:st.la,lo:st.lo,from:st.from,to:st.to});
+    S.stop={la:pt.la,lo:pt.lo,from:pt.t,to:pt.t};
+  }
+  save();draw();
+}
+function draw(){
+  $('kGo').textContent=(S.go/1000).toFixed(1);
+  $('kBack').textContent=(S.back/1000).toFixed(1);
+  $('tm').textContent=fmtT(Date.now()-S.start);
+  $('bSite').disabled=!!S.siteAt;$('bEnd').disabled=!S.siteAt;
+  $('bSite').textContent=S.siteAt?'📍 Site marked at '+hhmm(S.siteAt):'📍 Reached Site (unloading)';
+}
+function begin(){
+  $('setup').hidden=true;$('live').hidden=false;$('done').hidden=true;
+  if(!navigator.geolocation){$('stxt').textContent='This phone/browser has no GPS access.';return}
+  watch=navigator.geolocation.watchPosition(onPos,e=>{$('stxt').textContent=e.code===1?'Location blocked – allow location for this site in browser settings, then reload.':'GPS error: '+e.message},{enableHighAccuracy:true,maximumAge:0,timeout:30000});
+  lock();timer=setInterval(draw,15000);draw();
+}
+$('bStart').onclick=()=>{
+  const d=$('driver').value.trim();if(!d){$('driver').focus();$('driver').style.borderColor='var(--end)';return}
+  try{localStorage.setItem('ewsDriver',d)}catch(e){}
+  S={driver:d,vehicle:$('vehicle').value.trim(),note:$('note').value.trim(),start:Date.now(),go:0,back:0,pts:[],stops:[],last:null,stop:null,siteAt:null,site:null,end:null};
+  save();begin();
+};
+$('bSite').onclick=()=>{S.siteAt=Date.now();S.site=S.last?{la:S.last.la,lo:S.last.lo}:null;save();draw()};
+$('bEnd').onclick=()=>{
+  S.end=Date.now();
+  if(S.stop&&S.stop.to-S.stop.from>=3*60000)S.stops.push(S.stop);S.stop=null;
+  if(watch!=null)navigator.geolocation.clearWatch(watch);clearInterval(timer);try{wake&&wake.release()}catch(e){}
+  save();finish();
+};
+function routeLink(){
+  const p=S.pts;if(p.length<2)return'';
+  const n=Math.min(9,p.length-2),w=[];for(let i=1;i<=n;i++){const q=p[Math.round(i*(p.length-1)/(n+1))];w.push(q[0]+','+q[1])}
+  return'https://www.google.com/maps/dir/?api=1&origin='+p[0][0]+','+p[0][1]+'&destination='+p[p.length-1][0]+','+p[p.length-1][1]+(w.length?'&waypoints='+w.join('%7C'):'')+'&travelmode=driving';
+}
+function report(){
+  const d=new Date(S.start);
+  let t='*EWS TRIP REPORT*\n';
+  t+='Driver: '+S.driver+'\nVehicle: '+(S.vehicle||'-')+'\n';
+  if(S.note)t+='Going to: '+S.note+'\n';
+  t+='Date: '+d.toLocaleDateString('en-GB')+'\n';
+  t+='Left factory: '+hhmm(S.start)+'\n';
+  if(S.siteAt)t+='Reached site: '+hhmm(S.siteAt)+'\n';
+  t+='Back at factory: '+hhmm(S.end)+'\n\n';
+  t+='*Going KM: '+(S.go/1000).toFixed(1)+'*\n*Return KM: '+(S.back/1000).toFixed(1)+'*\n*Total KM: '+((S.go+S.back)/1000).toFixed(1)+'*\n';
+  t+='Total time: '+fmtT(S.end-S.start)+'\n';
+  if(S.site)t+='\nSite location: https://maps.google.com/?q='+S.site.la.toFixed(5)+','+S.site.lo.toFixed(5)+'\n';
+  if(S.stops.length){t+='\n*Stops (3 min or more):*\n';S.stops.forEach((s,i)=>{t+=(i+1)+'. '+hhmm(s.from)+'–'+hhmm(s.to)+' ('+Math.round((s.to-s.from)/60000)+' min) https://maps.google.com/?q='+s.la.toFixed(5)+','+s.lo.toFixed(5)+'\n'})}
+  const r=routeLink();if(r)t+='\nRoute: '+r+'\n';
+  t+='\nGPS points: '+S.pts.length;
+  return t;
+}
+function finish(){
+  $('setup').hidden=true;$('live').hidden=true;$('done').hidden=false;
+  $('report').textContent=report();
+}
+$('bWa').onclick=()=>{location.href='https://api.whatsapp.com/send?text='+encodeURIComponent(report())};
+$('bCopy').onclick=async()=>{try{await navigator.clipboard.writeText(report());$('bCopy').textContent='Copied ✓'}catch(e){const r=document.createRange();r.selectNodeContents($('report'));getSelection().removeAllRanges();getSelection().addRange(r)}};
+$('bNew').onclick=()=>{try{localStorage.removeItem('ewsTrip')}catch(e){}S=null;$('done').hidden=true;$('setup').hidden=false;$('note').value=''};
+// restore
+try{const d=localStorage.getItem('ewsDriver');if(d)$('driver').value=d;const s=JSON.parse(localStorage.getItem('ewsTrip')||'null');if(s){S=s;S.end?finish():begin()}}catch(e){}
+</script>
+</body>
+</html>
