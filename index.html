@@ -28,6 +28,7 @@ button:disabled{opacity:.4}
 @keyframes p{50%{opacity:.25}}
 pre{white-space:pre-wrap;font:13.5px/1.5 ui-monospace,Menlo,monospace;background:var(--bg);padding:10px;border-radius:9px;margin:0}
 .warn{font-size:13px;color:var(--site)}
+.alert{font-size:14px;font-weight:600;color:#fff;background:var(--end);padding:10px 12px;border-radius:9px}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -46,11 +47,12 @@ pre{white-space:pre-wrap;font:13.5px/1.5 ui-monospace,Menlo,monospace;background
     <label for="note">Going to (site / customer) – optional</label>
     <input id="note" placeholder="e.g. Irfan & Co. – Vehari Chowk">
     <button class="b-go" id="bStart">▶ Start Trip (leaving factory)</button>
-    <p class="warn">Allow location when the phone asks. Keep this page open on screen during the trip (phone on charger).</p>
+    <p class="warn">Allow location when the phone asks. Keep this page OPEN on screen during the whole trip (phone on charger). Do not lock the phone or open other apps – GPS stops when this page is closed.</p>
   </div>
 
   <div class="card" id="live" hidden>
     <div class="status" id="status"><span class="dot"></span><span id="stxt">Waiting for GPS…</span></div>
+    <div class="alert" id="gapw" hidden></div>
     <div class="stats">
       <div><b id="kGo">0.0</b><span>Going km</span></div>
       <div><b id="kBack">0.0</b><span>Return km</span></div>
@@ -75,24 +77,30 @@ const R=6371e3,rad=x=>x*Math.PI/180;
 function dist(a,b){const dl=rad(b.la-a.la),dn=rad(b.lo-a.lo);const h=Math.sin(dl/2)**2+Math.cos(rad(a.la))*Math.cos(rad(b.la))*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
 const fmtT=ms=>{const m=Math.floor(ms/60000);return Math.floor(m/60)+':'+String(m%60).padStart(2,'0')};
 const hhmm=t=>new Date(t).toLocaleTimeString('en-PK',{hour:'2-digit',minute:'2-digit'});
+const km=m=>(m/1000).toFixed(1);
+const P=q=>({la:q[0],lo:q[1]});
 async function lock(){try{wake=await navigator.wakeLock.request('screen')}catch(e){}}
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&S&&!S.end)lock()});
+document.addEventListener('visibilitychange',()=>{
+  if(!S||S.end)return;
+  if(document.visibilityState==='hidden'){S.hidAt=Date.now();save()}
+  else{if(S.hidAt){const m=Date.now()-S.hidAt;if(m>60000){S.offMs=(S.offMs||0)+m;S.offN=(S.offN||0)+1}S.hidAt=null;save()}lock();draw()}
+});
 
 function onPos(p){
   const c=p.coords,pt={la:c.latitude,lo:c.longitude,t:p.timestamp,a:c.accuracy};
   $('stxt').textContent='GPS on · accuracy '+Math.round(c.accuracy)+' m';
   $('status').className='status live';
-  if(c.accuracy>40)return;
+  if(c.accuracy>100)return;                       // very poor fix
   const leg=S.siteAt?'back':'go';
   const last=S.last;
   if(last){
     const d=dist(last,pt),dt=(pt.t-last.t)/1000;
-    if(d<8)return;                       // GPS jitter
-    if(dt>0&&d/dt>45)return;             // impossible jump (>160 km/h)
+    if(d<Math.max(10,(c.accuracy+(last.a||c.accuracy))/2))return;   // GPS jitter (scaled to accuracy)
+    if(dt>0&&d/dt>45)return;                       // impossible jump (>160 km/h)
+    if(dt>90&&d>300){S.gapN=(S.gapN||0)+1}         // GPS gap – filled by road distance at the end
     S[leg]+=d;
   }
   S.last=pt;S.pts.push([+pt.la.toFixed(5),+pt.lo.toFixed(5),pt.t,leg]);
-  // stop detection
   const st=S.stop;
   if(st&&dist(st,pt)<120){st.to=pt.t}else{
     if(st&&st.to-st.from>=3*60000)S.stops.push({la:st.la,lo:st.lo,from:st.from,to:st.to});
@@ -101,11 +109,13 @@ function onPos(p){
   save();draw();
 }
 function draw(){
-  $('kGo').textContent=(S.go/1000).toFixed(1);
-  $('kBack').textContent=(S.back/1000).toFixed(1);
+  $('kGo').textContent=km(S.go);
+  $('kBack').textContent=km(S.back);
   $('tm').textContent=fmtT(Date.now()-S.start);
   $('bSite').disabled=!!S.siteAt;$('bEnd').disabled=!S.siteAt;
   $('bSite').textContent=S.siteAt?'📍 Site marked at '+hhmm(S.siteAt):'📍 Reached Site (unloading)';
+  const g=$('gapw');
+  if(S.offN){g.hidden=false;g.textContent='⚠ Tracking stopped '+S.offN+' time(s) ('+Math.round(S.offMs/60000)+' min) because this page was closed. Keep it open on screen.'}else g.hidden=true;
 }
 function begin(){
   $('setup').hidden=true;$('live').hidden=false;$('done').hidden=true;
@@ -116,7 +126,7 @@ function begin(){
 $('bStart').onclick=()=>{
   const d=$('driver').value.trim();if(!d){$('driver').focus();$('driver').style.borderColor='var(--end)';return}
   try{localStorage.setItem('ewsDriver',d)}catch(e){}
-  S={driver:d,vehicle:$('vehicle').value.trim(),note:$('note').value.trim(),start:Date.now(),go:0,back:0,pts:[],stops:[],last:null,stop:null,siteAt:null,site:null,end:null};
+  S={driver:d,vehicle:$('vehicle').value.trim(),note:$('note').value.trim(),start:Date.now(),go:0,back:0,pts:[],stops:[],last:null,stop:null,siteAt:null,site:null,end:null,gapN:0,offN:0,offMs:0,hidAt:null,road:null};
   save();begin();
 };
 $('bSite').onclick=()=>{S.siteAt=Date.now();S.site=S.last?{la:S.last.la,lo:S.last.lo}:null;save();draw()};
@@ -126,13 +136,47 @@ $('bEnd').onclick=()=>{
   if(watch!=null)navigator.geolocation.clearWatch(watch);clearInterval(timer);try{wake&&wake.release()}catch(e){}
   save();finish();
 };
+
+// ---- leg points: going = start..site, return = site..end ----
+function legPts(leg){
+  const p=S.pts.filter(q=>q[3]===leg).map(P);
+  if(leg==='back'){const g=S.pts.filter(q=>q[3]==='go');const s=S.site||(g.length?P(g[g.length-1]):null);if(s)p.unshift(s)}
+  else if(S.site)p.push(S.site);
+  return p;
+}
+// keep points at least `gap` metres apart (removes clusters that cause U-turns), max n points
+function thin(p,gap,n){
+  if(p.length<3)return p;
+  let k=[p[0]];for(let i=1;i<p.length-1;i++)if(dist(k[k.length-1],p[i])>=gap)k.push(p[i]);
+  const e=p[p.length-1];if(dist(k[k.length-1],e)<gap&&k.length>1)k.pop();k.push(e);
+  if(k.length>n){const r=[];for(let i=0;i<n;i++)r.push(k[Math.round(i*(k.length-1)/(n-1))]);k=r}
+  return k;
+}
+// road distance from OSRM (free) following the recorded points
+async function roadKm(p){
+  if(p.length<2)return 0;
+  const c=thin(p,300,80);
+  const u='https://router.project-osrm.org/route/v1/driving/'+c.map(q=>q.lo.toFixed(5)+','+q.la.toFixed(5)).join(';')+'?overview=false&continue_straight=true';
+  const ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),20000);
+  try{const r=await fetch(u,{signal:ctl.signal}).then(r=>r.json());if(r.code!=='Ok')throw 0;return r.routes[0].distance}finally{clearTimeout(to)}
+}
+async function calcRoad(){
+  if(S.road)return;
+  try{const g=await roadKm(legPts('go')),b=await roadKm(legPts('back'));S.road={go:g,back:b};save()}catch(e){S.road=null}
+}
+// Google route link: points spread evenly by distance over both legs
 function routeLink(){
-  const p=S.pts;if(p.length<2)return'';
-  const n=Math.min(9,p.length-2),w=[];for(let i=1;i<=n;i++){const q=p[Math.round(i*(p.length-1)/(n+1))];w.push(q[0]+','+q[1])}
-  return'https://www.google.com/maps/dir/?api=1&origin='+p[0][0]+','+p[0][1]+'&destination='+p[p.length-1][0]+','+p[p.length-1][1]+(w.length?'&waypoints='+w.join('%7C'):'')+'&travelmode=driving';
+  const p=S.pts.map(P);if(p.length<2)return'';
+  const pick=(arr,n)=>{const t=thin(arr,300,200);if(t.length<=2)return[];const out=[];for(let i=1;i<=n;i++){const q=t[Math.round(i*(t.length-1)/(n+1))];if(q&&!out.includes(q))out.push(q)}return out};
+  const g=legPts('go'),b=legPts('back');
+  let w0=[...pick(g,4)];if(S.site)w0.push(S.site);w0=w0.concat(pick(b,4));
+  const o=p[0],de=p[p.length-1];let w=[];
+  w0.forEach(q=>{const prev=w.length?w[w.length-1]:o;if(dist(prev,q)>=300&&dist(de,q)>=300)w.push(q)});
+  const f=q=>q.la.toFixed(5)+','+q.lo.toFixed(5);
+  return'https://www.google.com/maps/dir/?api=1&origin='+f(p[0])+'&destination='+f(p[p.length-1])+(w.length?'&waypoints='+w.map(f).join('%7C'):'')+'&travelmode=driving';
 }
 function report(){
-  const d=new Date(S.start);
+  const d=new Date(S.start),rd=S.road;
   let t='*EWS TRIP REPORT*\n';
   t+='Driver: '+S.driver+'\nVehicle: '+(S.vehicle||'-')+'\n';
   if(S.note)t+='Going to: '+S.note+'\n';
@@ -140,23 +184,32 @@ function report(){
   t+='Left factory: '+hhmm(S.start)+'\n';
   if(S.siteAt)t+='Reached site: '+hhmm(S.siteAt)+'\n';
   t+='Back at factory: '+hhmm(S.end)+'\n\n';
-  t+='*Going KM: '+(S.go/1000).toFixed(1)+'*\n*Return KM: '+(S.back/1000).toFixed(1)+'*\n*Total KM: '+((S.go+S.back)/1000).toFixed(1)+'*\n';
+  if(rd){
+    t+='*Going KM (road): '+km(rd.go)+'*\n*Return KM (road): '+km(rd.back)+'*\n*Total KM (road): '+km(rd.go+rd.back)+'*\n';
+    t+='GPS KM: going '+km(S.go)+' · return '+km(S.back)+' · total '+km(S.go+S.back)+'\n';
+  }else{
+    t+='*Going KM (GPS): '+km(S.go)+'*\n*Return KM (GPS): '+km(S.back)+'*\n*Total KM (GPS): '+km(S.go+S.back)+'*\n';
+    t+='Road KM: not calculated (no internet) – open this page again with internet\n';
+  }
   t+='Total time: '+fmtT(S.end-S.start)+'\n';
   if(S.site)t+='\nSite location: https://maps.google.com/?q='+S.site.la.toFixed(5)+','+S.site.lo.toFixed(5)+'\n';
   if(S.stops.length){t+='\n*Stops (3 min or more):*\n';S.stops.forEach((s,i)=>{t+=(i+1)+'. '+hhmm(s.from)+'–'+hhmm(s.to)+' ('+Math.round((s.to-s.from)/60000)+' min) https://maps.google.com/?q='+s.la.toFixed(5)+','+s.lo.toFixed(5)+'\n'})}
   const r=routeLink();if(r)t+='\nRoute: '+r+'\n';
   t+='\nGPS points: '+S.pts.length;
+  if(S.gapN)t+=' · GPS gaps: '+S.gapN;
+  if(S.offN)t+='\n⚠ Page was closed '+S.offN+' time(s) for '+Math.round(S.offMs/60000)+' min during the trip';
   return t;
 }
-function finish(){
+async function finish(){
   $('setup').hidden=true;$('live').hidden=true;$('done').hidden=false;
+  if(!S.road){$('report').textContent='Calculating road KM…';$('bWa').disabled=true;await calcRoad();$('bWa').disabled=false}
   $('report').textContent=report();
 }
 $('bWa').onclick=()=>{location.href='https://api.whatsapp.com/send?text='+encodeURIComponent(report())};
 $('bCopy').onclick=async()=>{try{await navigator.clipboard.writeText(report());$('bCopy').textContent='Copied ✓'}catch(e){const r=document.createRange();r.selectNodeContents($('report'));getSelection().removeAllRanges();getSelection().addRange(r)}};
 $('bNew').onclick=()=>{try{localStorage.removeItem('ewsTrip')}catch(e){}S=null;$('done').hidden=true;$('setup').hidden=false;$('note').value=''};
 // restore
-try{const d=localStorage.getItem('ewsDriver');if(d)$('driver').value=d;const s=JSON.parse(localStorage.getItem('ewsTrip')||'null');if(s){S=s;S.end?finish():begin()}}catch(e){}
+try{const d=localStorage.getItem('ewsDriver');if(d)$('driver').value=d;const s=JSON.parse(localStorage.getItem('ewsTrip')||'null');if(s){S=s;if(!S.end&&S.hidAt){const m=Date.now()-S.hidAt;if(m>60000){S.offMs=(S.offMs||0)+m;S.offN=(S.offN||0)+1}S.hidAt=null}S.end?finish():begin()}}catch(e){}
 </script>
 </body>
 </html>
