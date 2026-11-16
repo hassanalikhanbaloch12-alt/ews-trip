@@ -63,6 +63,8 @@ pre{white-space:pre-wrap;font:13.5px/1.5 ui-monospace,Menlo,monospace;background
   </div>
 
   <div class="card" id="done" hidden>
+    <div class="status" id="odoo">Saving trip to Odoo…</div>
+    <button class="b-sec" id="bRetry" hidden>Retry saving to Odoo</button>
     <pre id="report"></pre>
     <button class="b-wa" id="bWa">Send to WhatsApp</button>
     <button class="b-sec" id="bCopy">Copy report</button>
@@ -126,7 +128,7 @@ function begin(){
 $('bStart').onclick=()=>{
   const d=$('driver').value.trim();if(!d){$('driver').focus();$('driver').style.borderColor='var(--end)';return}
   try{localStorage.setItem('ewsDriver',d)}catch(e){}
-  S={driver:d,vehicle:$('vehicle').value.trim(),note:$('note').value.trim(),start:Date.now(),go:0,back:0,pts:[],stops:[],last:null,stop:null,siteAt:null,site:null,end:null,gapN:0,offN:0,offMs:0,hidAt:null,road:null};
+  S={driver:d,vehicle:$('vehicle').value.trim(),note:$('note').value.trim(),start:Date.now(),go:0,back:0,pts:[],stops:[],last:null,stop:null,siteAt:null,site:null,end:null,gapN:0,offN:0,offMs:0,hidAt:null,road:null,uid:d.replace(/\W+/g,'').slice(0,12)+'-'+Date.now()+'-'+Math.random().toString(36).slice(2,8),sent:false};
   save();begin();
 };
 $('bSite').onclick=()=>{S.siteAt=Date.now();S.site=S.last?{la:S.last.la,lo:S.last.lo}:null;save();draw()};
@@ -200,11 +202,27 @@ function report(){
   if(S.offN)t+='\n⚠ Page was closed '+S.offN+' time(s) for '+Math.round(S.offMs/60000)+' min during the trip';
   return t;
 }
+// ---- save the trip straight into Odoo (Engineering Works and Solution > Inventory > Trip Log) ----
+const HOOK='https://rbcc.xbeeo.com/web/hook/c84cc647-ef2a-453e-99a9-96bc1f75c6cb';
+async function sendOdoo(){
+  const o=$('odoo');$('bRetry').hidden=true;
+  if(S.sent){o.textContent='✓ Trip saved in Odoo (Trip Log)';return}
+  if(!S.uid)S.uid='T-'+S.start+'-'+Math.random().toString(36).slice(2,8);
+  o.textContent='Saving trip to Odoo…';
+  const p={app:'ews-trip',uid:S.uid,driver:S.driver,vehicle:S.vehicle,note:S.note,start:S.start,siteAt:S.siteAt,end:S.end,go:S.go,back:S.back,road:S.road,
+    points:S.pts.length,gaps:S.gapN||0,offN:S.offN||0,offMin:Math.round((S.offMs||0)/60000),
+    siteUrl:S.site?'https://maps.google.com/?q='+S.site.la.toFixed(5)+','+S.site.lo.toFixed(5):'',routeUrl:routeLink(),report:report(),
+    raw:JSON.stringify({pts:S.pts,stops:S.stops,site:S.site}),ua:navigator.userAgent};
+  try{await fetch(HOOK,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain'},body:JSON.stringify(p)});S.sent=true;save();o.textContent='✓ Trip saved in Odoo (Trip Log)'}
+  catch(e){o.textContent='⚠ Not saved in Odoo (no internet). Turn on internet and press Retry.';$('bRetry').hidden=false}
+}
 async function finish(){
   $('setup').hidden=true;$('live').hidden=true;$('done').hidden=false;
   if(!S.road){$('report').textContent='Calculating road KM…';$('bWa').disabled=true;await calcRoad();$('bWa').disabled=false}
   $('report').textContent=report();
+  await sendOdoo();
 }
+$('bRetry').onclick=async()=>{if(!S.road)await calcRoad();$('report').textContent=report();await sendOdoo()};
 $('bWa').onclick=()=>{location.href='https://api.whatsapp.com/send?text='+encodeURIComponent(report())};
 $('bCopy').onclick=async()=>{try{await navigator.clipboard.writeText(report());$('bCopy').textContent='Copied ✓'}catch(e){const r=document.createRange();r.selectNodeContents($('report'));getSelection().removeAllRanges();getSelection().addRange(r)}};
 $('bNew').onclick=()=>{try{localStorage.removeItem('ewsTrip')}catch(e){}S=null;$('done').hidden=true;$('setup').hidden=false;$('note').value=''};
